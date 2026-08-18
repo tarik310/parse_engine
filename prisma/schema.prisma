@@ -1,0 +1,126 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// ── Dataset ────────────────────────────────────────────────────────────────
+// Named collection of raw text inputs.
+
+model Dataset {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  slug        String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  inputs         DatasetInput[]
+  extractionJobs ExtractionJob[]
+}
+
+// ── DatasetInput ───────────────────────────────────────────────────────────
+// Individual text input within a Dataset.
+// Uniqueness is enforced per dataset on both content hash and label.
+
+model DatasetInput {
+  id              String   @id @default(uuid())
+  datasetId       String
+  label           String
+  content         String
+  contentHash     String   // SHA-1 of trimmed content
+  ingestionMethod String   // "file_upload" | "manual_entry" | "api"
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  dataset           Dataset            @relation(fields: [datasetId], references: [id])
+  extractionResults ExtractionResult[]
+
+  @@unique([contentHash, datasetId])
+  @@unique([label, datasetId])
+  @@index([datasetId])
+}
+
+// ── Instruction ────────────────────────────────────────────────────────────
+// Extraction prompt template. Prompt may contain {INPUT_TEXT} placeholder.
+// outputSchema is an optional JSON Schema passed to Ollama to constrain output.
+
+model Instruction {
+  id           String   @id @default(uuid())
+  title        String
+  prompt       String
+  outputSchema Json?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  extractionJobs ExtractionJob[]
+}
+
+// ── ExtractionJob ──────────────────────────────────────────────────────────
+// Batch job combining a Dataset + Instruction + Ollama model.
+// modelOptions are stored as flat columns (temperature, numCtx, think)
+// rather than a nested JSON object for easier querying.
+// think: null = not set, "true"/"false" = boolean mode, "low"/"medium"/"high" = level mode
+
+model ExtractionJob {
+  id                         String    @id @default(uuid())
+  title                      String
+  modelName                  String
+  instructionId              String
+  datasetId                  String
+  // modelOptions
+  temperature                Float     @default(0)
+  numCtx                     Int?
+  think                      String?
+  // runtime state
+  isRunning                  Boolean   @default(false)
+  startedAt                  DateTime?
+  finishedAt                 DateTime?
+  totalProcessingTimeSeconds Float     @default(0)
+  lastSuccessfulInputLabel   String?
+  currentInputLabel          String?
+  createdAt                  DateTime  @default(now())
+  updatedAt                  DateTime  @updatedAt
+
+  instruction       Instruction        @relation(fields: [instructionId], references: [id])
+  dataset           Dataset            @relation(fields: [datasetId], references: [id])
+  extractionResults ExtractionResult[]
+}
+
+// ── ExtractionResult ───────────────────────────────────────────────────────
+// Per-input extraction result. Stores the full audit trail (renderedPrompt, rawResponse).
+// usageMetrics are stored as flat columns for simplicity.
+// extractedData is the parsed JSON extraction result.
+
+model ExtractionResult {
+  id                        String   @id @default(uuid())
+  inputLabel                String?
+  contentHash               String
+  extractionJobId           String
+  datasetInputId            String
+  processedAt               DateTime @default(now())
+  processingDurationSeconds Float    @default(0)
+  status                    String   // "success" | "failed"
+  extractedData             Json?
+  errorMessage              String?
+  renderedPrompt            String?
+  rawResponse               String?
+  // usageMetrics
+  totalDuration             Float?
+  loadDuration              Float?
+  promptEvalCount           Int?
+  promptEvalDuration        Float?
+  evalCount                 Int?
+  evalDuration              Float?
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
+
+  extractionJob ExtractionJob @relation(fields: [extractionJobId], references: [id])
+  datasetInput  DatasetInput   @relation(fields: [datasetInputId], references: [id])
+
+  @@unique([datasetInputId, extractionJobId])
+  @@index([extractionJobId, status])
+}
